@@ -15,6 +15,7 @@ import time
 import argparse
 from pathlib import Path
 from typing import Optional, List
+from datetime import datetime
 
 import yt_dlp
 from faster_whisper import WhisperModel
@@ -44,6 +45,14 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# B站搜索模块
+try:
+    from src.bilibili_search import search_bilibili_videos, format_duration, format_play_count
+    BILIBILI_SEARCH_AVAILABLE = True
+except ImportError:
+    BILIBILI_SEARCH_AVAILABLE = False
+    logger.warning("B站搜索模块不可用，请安装: pip install bilibili-api-python")
 
 # ==================== 工具函数 ====================
 def format_time(seconds: float) -> str:
@@ -368,9 +377,9 @@ def process_video(
     # 加载配置
     config = load_config()
 
-    # 默认提示词
+    # 如果没有指定提示词，使用空列表（由调用方决定默认行为）
     if prompt_names is None:
-        prompt_names = ["evaluation"]
+        prompt_names = []
 
     # 1. 下载音频
     print(f"📥 步骤 1: 下载音频 ({platform})...")
@@ -433,10 +442,14 @@ def process_video(
     # 4. 保存结果
     print("\n💾 步骤 4: 保存结果...")
     save_start = time.time()
+
+    # 生成时间戳（格式：YYMMDD）
+    timestamp = datetime.now().strftime("%y%m%d")
+
     safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_'))[:50]
 
     # 保存原始转写
-    raw_file = OUTPUT_DIR / f"{safe_title}_raw.md"
+    raw_file = OUTPUT_DIR / f"{timestamp}_{safe_title}_raw.md"
     with open(raw_file, "w", encoding="utf-8") as f:
         f.write(f"# {title}\n\n")
         f.write(f"**视频链接**: {video_url}\n\n")
@@ -447,7 +460,7 @@ def process_video(
     # 保存优化版本（多个）
     optimized_files = {}
     for prompt_name, optimized_text in optimized_texts.items():
-        optimized_file = OUTPUT_DIR / f"{safe_title}_{prompt_name}.md"
+        optimized_file = OUTPUT_DIR / f"{timestamp}_{safe_title}_{prompt_name}.md"
         with open(optimized_file, "w", encoding="utf-8") as f:
             f.write(f"# {title}\n\n")
             f.write(f"**视频链接**: {video_url}\n\n")
@@ -570,6 +583,12 @@ def main():
   # 批量处理
   python transcribe.py --batch urls.txt
 
+  # B站搜索并转录（默认前5个）
+  python transcribe.py --search "Python教程"
+
+  # B站搜索并转录前10个
+  python transcribe.py --search "Python教程" --search-count 10
+
   # 列出可用的提示词
   python transcribe.py --list-prompts
         """
@@ -577,6 +596,11 @@ def main():
 
     parser.add_argument('--url', type=str, help='视频链接')
     parser.add_argument('--batch', type=str, help='批量处理文件（每行一个 URL）')
+    parser.add_argument('--search', type=str, help='B站搜索关键词')
+    parser.add_argument('--search-count', type=int, default=5, help='搜索结果数量（默认5）')
+    parser.add_argument('--search-order', type=str, default='totalrank',
+                        choices=['totalrank', 'pubdate', 'click', 'dm'],
+                        help='搜索排序方式：totalrank=综合排序, pubdate=最新发布, click=最多播放, dm=最多弹幕')
     parser.add_argument('--prompts', type=str, help='提示词名称，多个用逗号分隔（如: evaluation,summary）')
     parser.add_argument('--no-llm', action='store_true', help='禁用大模型优化')
     parser.add_argument('--model-size', type=str, default='tiny', choices=['tiny', 'base', 'small'], help='Whisper 模型大小')
@@ -605,6 +629,58 @@ def main():
                 print(f"可用的提示词: {', '.join(available)}")
                 return
 
+    # B站搜索模式
+    if args.search:
+        if not BILIBILI_SEARCH_AVAILABLE:
+            print("错误: B站搜索功能不可用")
+            print("请安装依赖: pip install bilibili-api-python")
+            return
+
+        print(f"\n🔍 搜索B站视频: {args.search}")
+        print(f"   数量: {args.search_count}")
+        print(f"   排序: {args.search_order}")
+
+        # 搜索视频
+        videos = search_bilibili_videos(
+            keyword=args.search,
+            count=args.search_count,
+            order=args.search_order
+        )
+
+        if not videos:
+            print("错误: 搜索无结果或搜索失败")
+            return
+
+        # 显示搜索结果
+        print(f"\n📊 找到 {len(videos)} 个视频:")
+        for i, video in enumerate(videos, 1):
+            print(f"  {i}. {video['title']}")
+            print(f"     时长: {format_duration(video['duration'])}, "
+                  f"播放: {format_play_count(video['play'])}, "
+                  f"UP主: {video['author']}")
+
+        # 提取URL列表
+        urls = [video['url'] for video in videos]
+
+        # 如果没有指定提示词，使用所有可用的提示词
+        if prompt_names is None:
+            prompt_names = list_available_prompts()
+            if prompt_names:
+                print(f"\n未指定提示词，将使用所有可用的提示词: {', '.join(prompt_names)}")
+            else:
+                print("\n警告: 未找到可用的提示词，将只进行原始转写")
+
+        # 调用批量处理
+        print(f"\n🎬 开始批量转录...")
+        process_batch(
+            video_urls=urls,
+            model_size=args.model_size,
+            cpu_threads=args.cpu_threads,
+            enable_llm_optimization=not args.no_llm,
+            prompt_names=prompt_names
+        )
+        return
+
     # 批量处理模式
     if args.batch:
         batch_file = Path(args.batch)
@@ -618,6 +694,14 @@ def main():
         if not urls:
             print("错误: 批量处理文件为空")
             return
+
+        # 如果没有指定提示词，使用所有可用的提示词
+        if prompt_names is None:
+            prompt_names = list_available_prompts()
+            if prompt_names:
+                print(f"未指定提示词，将使用所有可用的提示词: {', '.join(prompt_names)}")
+            else:
+                print("警告: 未找到可用的提示词，将只进行原始转写")
 
         process_batch(
             video_urls=urls,
@@ -649,8 +733,7 @@ def main():
                 # 显示可用提示词
                 available = list_available_prompts()
                 print(f"\n可用的提示词: {', '.join(available)}")
-                # 提示语也可以相应修改一下
-                print("请选择提示词（多个用逗号分隔，直接回车则选择全部）:") 
+                print("请选择提示词（多个用逗号分隔，直接回车则选择全部）:")
                 prompts_input = input("> ").strip()
 
                 if prompts_input:
@@ -658,12 +741,21 @@ def main():
                     prompt_names = [p.strip() for p in prompts_input.split(',')]
                 else:
                     # 如果用户没输入内容（直接回车），就使用全部可用的提示词
-                    prompt_names = available 
+                    prompt_names = available
 
         else:
             enable_llm = False
     else:
+        # 命令行模式
         enable_llm = not args.no_llm
+
+        # 如果没有指定提示词，使用所有可用的提示词
+        if enable_llm and prompt_names is None:
+            prompt_names = list_available_prompts()
+            if prompt_names:
+                print(f"未指定提示词，将使用所有可用的提示词: {', '.join(prompt_names)}")
+            else:
+                print("警告: 未找到可用的提示词，将只进行原始转写")
 
     try:
         process_video(

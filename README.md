@@ -1,8 +1,22 @@
-# **Video-QuickEval**
+# **video-quick-eval**
 
 快速将 Bilibili/YouTube 视频转写为文本，支持大模型智能优化。
 
 内置部分提示词，用于优化视频文本、质量评估和总结。
+
+**新功能**: 支持B站关键词搜索，自动转录搜索结果！
+
+> 现在很多时候，我都习惯于在上面观看视频来学习新知识。为了方便回顾和消化，一直想找个好用的工具来总结视频内容。
+>
+> 但在实际上很遇到一些问题：
+>
+> 第一，很多工具都太重了，不是要装浏览器插件就是要配置一套前端环境，对于只想快速得到结果的我来说，实在有些折腾。
+>
+> 第二，也是最关键的一点，我发现视频的自动语音转录文本质量参差不齐，充满了“嗯”、“啊”之类的口水话和识别错误。我对比了低质量和高质量的转换文本给AI总结，发现效果差的比较多。
+>
+> 第三，营销号太多了，很多时候看了半天发现没啥意义。
+>
+> 因此，我自己搓了一个纯后端、轻量化的小工具。工作流程：1.下载视频并转录；2.用LLM格式化；3.用LLM进行评估和总结。
 
 ## 安装
 
@@ -77,7 +91,7 @@ cp config.example.json config.json
 
 ## 使用方法
 
-#### 交互式运行
+### 交互式运行
 
 ```bash
 python transcribe.py
@@ -85,29 +99,61 @@ python transcribe.py
 
 程序会提示你输入视频链接、选择提示词等。
 
-#### 命令行模式
+### 命令行模式
 
-单个视频：
+#### 单个视频
 ```bash
 python transcribe.py --url "https://www.bilibili.com/video/BV1xx411c7mD"
 ```
 
-使用多个提示词：
+#### B站搜索（新功能）
+
+搜索并转录前5个视频（默认）：
+```bash
+python transcribe.py --search "Python教程"
+```
+
+搜索并转录前10个视频：
+```bash
+python transcribe.py --search "Python教程" --search-count 10
+```
+
+指定排序方式：
+```bash
+# 综合排序（默认）
+python transcribe.py --search "Python教程" --search-order totalrank
+
+# 最新发布
+python transcribe.py --search "Python教程" --search-order pubdate
+
+# 最多播放
+python transcribe.py --search "Python教程" --search-order click
+
+# 最多弹幕
+python transcribe.py --search "Python教程" --search-order dm
+```
+
+结合其他参数：
+```bash
+python transcribe.py --search "Python教程" --search-count 10 --prompts evaluation --model-size base
+```
+
+#### 使用多个提示词
 ```bash
 python transcribe.py --url "视频链接" --prompts evaluation,summary,format
 ```
 
-指定 Whisper 模型：
+#### 指定 Whisper 模型
 ```bash
 python transcribe.py --url "视频链接" --model-size base
 ```
 
-批量处理（从文件读取）：
+#### 批量处理（从文件读取）
 ```bash
 python transcribe.py --batch urls.txt
 ```
 
-列出可用提示词：
+#### 列出可用提示词
 ```bash
 python transcribe.py --list-prompts
 ```
@@ -126,12 +172,15 @@ video-transcribe-ai/
 │   ├── __init__.py
 │   ├── downloader.py      # 视频下载器
 │   ├── transcriber.py     # 音频转写器
+│   ├── bilibili_search.py # B站搜索模块（新）
 │   ├── models.py          # 数据模型
 │   └── utils.py           # 工具函数
 ├── prompts/               # 提示词模板
 │   ├── evaluation.md      # 评估提示词
 │   ├── summary.md         # 总结提示词
 │   └── format.md          # 格式化提示词
+├── docs/                  # 文档目录
+│   └── bilibili_search_guide.md  # B站搜索功能详细说明
 ├── output/                # 输出目录（自动创建）
 ├── data/                  # 临时数据目录（自动创建）
 ├── models/                # 模型缓存目录（自动创建）
@@ -153,6 +202,7 @@ video-transcribe-ai/
 
 ## 工作流程
 
+### 单个视频/批量处理模式
 1. **下载音频**：从指定平台下载视频音频（MP3 格式，64kbps）
 2. **音频转写**：使用 Faster-Whisper 模型将音频转为文字
 3. **繁简转换**：自动将繁体中文转为简体中文（需要 opencc）
@@ -163,11 +213,18 @@ video-transcribe-ai/
 6. **保存结果**：保存原始转写稿和优化后的文本
 7. **清理临时文件**：删除下载的音频文件
 
+### B站搜索模式（新）
+1. **关键词搜索**：使用 bilibili-api-python 搜索B站视频
+2. **结果展示**：显示搜索结果（标题、时长、播放量、UP主等）
+3. **批量转录**：自动对搜索结果进行批量转录
+4. **后续流程**：与批量处理模式相同
+
 **注意**：
 
 - 模型首次使用时会自动从 ModelScope 下载
 - 模型存储在 `models/whisper/` 目录
 - 如果模型下载不完整，删除对应目录后重新运行即可
+- B站搜索功能需要安装 `bilibili-api-python` 库
 
 ## 贡献
 
@@ -183,9 +240,17 @@ MIT License
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) - 强大的视频下载工具
 - [ModelScope](https://modelscope.cn/) - 模型托管平台
 - [OpenCC](https://github.com/BYVoid/OpenCC) - 繁简转换工具
+- [bilibili-api-python](https://github.com/Nemo2011/bilibili-api) - B站API封装库
 - [JefferyHcool/BiliNote](https://github.com/JefferyHcool/BiliNote) - 项目灵感来源
 
 ## 更新日志
+
+### v1.1.0 (最新)
+- ✨ 新增B站关键词搜索功能
+- 支持搜索并自动转录前N个视频
+- 支持多种排序方式（综合、最新、播放量、弹幕数）
+- 添加搜索结果信息展示
+- 完善文档和使用说明
 
 ### v1.0.0
 - 初始版本发布
@@ -201,6 +266,7 @@ MIT License
 - **大模型**: OpenAI API、Anthropic API、国内大模型 API
 - **繁简转换**: OpenCC
 - **模型托管**: ModelScope
+- **B站搜索**: bilibili-api-python
 
 ## 联系方式
 
